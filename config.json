@@ -1,0 +1,46 @@
+{
+  "storage": {
+    "raw_path": "data/raw_reviews.jsonl",
+    "clean_path": "data/clean_reviews.jsonl",
+    "extracts_path": "data/extracts.jsonl"
+  },
+  "columns": {
+    "text": "reviews.text_ko",
+    "original_text": "reviews.text",
+    "rating": "reviews.rating",
+    "date": "reviews.date",
+    "product": "name",
+    "brand": "brand",
+    "source_id": "id"
+  },
+  "duplicate_policy": "skip",
+  "clean": {
+    "min_length": 5
+  },
+"ai": {
+  "provider": "gemini",
+  "api_key_env": "GEMINI_API_KEY",
+  "base_url": "https://generativelanguage.googleapis.com/v1beta/models",
+  "model": "gemini-2.5-flash",
+  "timeout_seconds": 90,
+  "batch_size": 10,
+  "extract_limit": 120
+  },
+  "visualization": {
+    "output_dir": "output",
+    "font_candidates": [
+      "Malgun Gothic",
+      "AppleGothic",
+      "NanumGothic",
+      "DejaVu Sans"
+    ]
+  },
+  "logging": {
+    "level": "INFO",
+    "file": "logs/app.log"
+  },
+  "alert": {
+    "recent_days": 30,
+    "negative_ratio_threshold": 0.3
+  }
+}
