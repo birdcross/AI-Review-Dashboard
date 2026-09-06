@@ -16,6 +16,7 @@ from app.services import analyze, extract
 from app.analytics import stats, theme_counts, recent_negative_alert
 from app.dashboard import dashboard
 from app.exporter import export
+from app.compare import compare, compare_category, list_categories
 from app.shop import (
     product_catalog,
     product_summary,
@@ -111,6 +112,16 @@ def parser():
     x.add_argument('--date-to')
     x.add_argument('--product')
     x.add_argument('--brand')
+
+    x = sp.add_parser('compare', help='제품/브랜드/카테고리 단위로 리뷰를 비교 분석한다')
+    g = x.add_mutually_exclusive_group()
+    g.add_argument('--products', help='쉼표(,)로 구분한 제품명 목록 (예: "제품A,제품B")')
+    g.add_argument('--brands', help='쉼표(,)로 구분한 브랜드명 목록 (예: "브랜드A,브랜드B")')
+    g.add_argument('--category', help='카테고리명으로 비교 (같은 종류의 제품끼리만 자동으로 묶어서 비교)')
+    x.add_argument('--limit', type=int, help='--category 사용 시 비교에 포함할 제품 개수 (기본 5, 리뷰 많은 순)')
+    x.add_argument('--list-categories', action='store_true', help='사용 가능한 카테고리 목록만 보고 종료')
+    x.add_argument('--output-dir')
+    x.add_argument('--no-chart', action='store_true', help='비교 차트를 생성하지 않는다')
     return p
 
 
@@ -166,6 +177,35 @@ def print_stats(st, title='리뷰 분석 통계'):
     print(f"별점-감정 일치 : {st['rating_sentiment_agreement']:.1f}%" if st['rating_sentiment_agreement'] is not None else '별점-감정 일치 : N/A')
 
 
+def print_compare_result(result, kind):
+    label = '제품' if kind == 'product' else '브랜드'
+    if result['errors']:
+        print('\n[안내] 아래 입력은 매칭에 실패했습니다:')
+        for e in result['errors']:
+            print(f" - '{e['input']}': {e['reason']}")
+            if e['candidates']:
+                print('   후보:', ', '.join(e['candidates']))
+    if not result['items']:
+        print(f'\n비교할 수 있는 {label}이 없습니다. 이름을 다시 확인해주세요.')
+        return
+    meta = result.get('meta') or {}
+    if meta.get('category'):
+        print(f"\n[카테고리] {meta['category']}  "
+              f"(전체 {meta['total_matched']}개 중 리뷰 많은 순 상위 {meta['shown']}개 비교, "
+              f"제품명 키워드 기반 추정 카테고리)")
+    print(f'\n=== {label} 비교 분석 ({len(result["items"])}개) ===')
+    print(result['table'])
+    print('\n[인사이트]')
+    for line in result['insights']:
+        print(line)
+    if result['charts']:
+        print('\n[생성된 차트]')
+        for c in result['charts']:
+            print(' -', c)
+    if result['report']:
+        print('\n[리포트 저장]', result['report'])
+
+
 def has_api_key(cfg):
     # .env까지 로드해서 실제 설정된 API 키가 있는지 확인한다.
     return bool(get_api_key(cfg))
@@ -196,6 +236,7 @@ def main_header(storage):
     print('  3. 전체 리뷰 AI 대시보드')
     print('  4. 리뷰 검색 / 상세 조회')
     print('  5. 분석 결과 내보내기')
+    print('  6. 제품/브랜드/카테고리 비교 분석')
     print('  0. 종료')
     print('=' * 78)
 
@@ -550,6 +591,139 @@ def export_menu(storage, cfg):
     pause()
 
 
+def pick_products_menu(storage):
+    """제품명을 직접 타이핑하지 않고, 번호로 여러 개를 골라서 반환한다.
+
+    show_catalog()와 같은 목록/페이지네이션 방식을 그대로 재사용하고,
+    선택만 '한 개 상세보기' 대신 '여러 개 번호 입력'으로 바꾼 버전이다.
+    """
+    query = ask('제품명/브랜드 검색어로 후보를 좁히시겠어요? (전체 목록은 Enter)', '') or None
+    items = product_catalog(storage.get_clean(), query)
+    if not items:
+        print('조건에 맞는 제품이 없습니다.')
+        pause()
+        return []
+    page = 1
+    size = 10
+    while True:
+        clear_screen()
+        pages = max(1, math.ceil(len(items) / size))
+        page = min(max(page, 1), pages)
+        start = (page - 1) * size
+        visible = items[start:start + size]
+        print('=' * 100)
+        print(f' 비교할 제품 선택   ({page}/{pages} 페이지, 총 {len(items)}종)')
+        print('=' * 100)
+        print(f"{'번호':<5}{'브랜드':<14}{'제품명':<52}{'리뷰':>8}{'평균별점':>11}")
+        print('-' * 100)
+        for i, item in enumerate(visible, 1):
+            avg = f"{item['average_rating']:.2f}" if item['average_rating'] is not None else '-'
+            print(f"{i:<5}{short_name(item['brand'],12):<14}{short_name(item['product'],48):<52}{item['count']:>7,}건{avg:>10}")
+        print('-' * 100)
+        print('번호(쉼표로 여러 개, 예: 1,3): 선택   N: 다음   P: 이전   0: 취소')
+        choice = input('선택 > ').strip().lower()
+        if choice == '0':
+            return []
+        if choice == 'n' and page < pages:
+            page += 1
+            continue
+        if choice == 'p' and page > 1:
+            page -= 1
+            continue
+        tokens = [t.strip() for t in choice.split(',') if t.strip()]
+        picks = []
+        ok = bool(tokens)
+        for t in tokens:
+            try:
+                n = int(t)
+            except ValueError:
+                ok = False
+                break
+            if not (1 <= n <= len(visible)):
+                ok = False
+                break
+            picks.append(visible[n - 1]['product'])
+        if ok:
+            return picks
+        print('화면에 보이는 번호만 쉼표로 구분해서 입력해주세요 (예: 1,3).')
+        pause()
+
+
+def category_compare_menu(storage, cfg):
+    clear_screen()
+    cats = list_categories(storage)
+    if not cats:
+        print('카테고리 정보를 계산할 데이터가 없습니다.')
+        pause()
+        return
+    print('=' * 80)
+    print(' 카테고리로 비교 (제품명 키워드 기반 추정 카테고리입니다)')
+    print('=' * 80)
+    ordered = sorted(cats.items(), key=lambda x: -x[1])
+    for i, (name, count) in enumerate(ordered, 1):
+        print(f' {i:>2}. {name} ({count}개 제품)')
+    print('  0. 뒤로')
+    choice = ask('번호 또는 카테고리명 입력')
+    if not choice or choice == '0':
+        return
+    if choice.isdigit() and 1 <= int(choice) <= len(ordered):
+        category_name = ordered[int(choice) - 1][0]
+    else:
+        category_name = choice
+    limit = ask_int('비교에 포함할 제품 개수 (리뷰 많은 순, 기본 5)', 5, 1)
+    out_dir = Path(cfg['visualization']['output_dir']) / 'compare' / safe_folder_name(category_name)
+    result = compare_category(storage, cfg, category_name, limit, str(out_dir), True)
+    print_compare_result(result, 'product')
+    pause()
+
+
+def compare_menu(storage, cfg):
+    clear_screen()
+    print('=' * 80)
+    print(' 제품 / 브랜드 / 카테고리 비교 분석')
+    print('=' * 80)
+    print(' 1. 제품끼리 비교 (번호로 선택)')
+    print(' 2. 제품끼리 비교 (이름 직접 입력)')
+    print(' 3. 브랜드끼리 비교')
+    print(' 4. 카테고리로 비교 (예: 스피커, 헤드폰/이어폰 등)')
+    print(' 0. 뒤로')
+    choice = input('선택 > ').strip()
+
+    if choice == '1':
+        names = pick_products_menu(storage)
+        if len(names) < 2:
+            if names:
+                print('\n비교하려면 2개 이상 선택해주세요.')
+                pause()
+            return
+        kind = 'product'
+    elif choice == '2':
+        print('\n비교할 제품명을 쉼표(,)로 구분해서 2개 이상 입력해주세요.')
+        print('(제품명은 일부만 입력해도 후보가 1개면 자동으로 찾아줍니다.)')
+        raw = ask('제품명 목록 (예: 이름1,이름2)')
+        if not raw:
+            return
+        names = raw.split(',')
+        kind = 'product'
+    elif choice == '3':
+        print('\n비교할 브랜드명을 쉼표(,)로 구분해서 2개 이상 입력해주세요.')
+        raw = ask('브랜드명 목록 (예: 이름1,이름2)')
+        if not raw:
+            return
+        names = raw.split(',')
+        kind = 'brand'
+    elif choice == '4':
+        category_compare_menu(storage, cfg)
+        return
+    else:
+        return
+
+    out_dir = Path(cfg['visualization']['output_dir']) / 'compare'
+    result = compare(storage, cfg, kind, names, str(out_dir), True)
+    print_compare_result(result, kind)
+    pause()
+
+
 def interactive_shop(storage, cfg):
     ensure_data(storage, cfg)
     if not storage.get_clean():
@@ -575,8 +749,10 @@ def interactive_shop(storage, cfg):
                 review_search_menu(storage)
             elif choice == '5':
                 export_menu(storage, cfg)
+            elif choice == '6':
+                compare_menu(storage, cfg)
             else:
-                print('0~5 사이 번호를 선택해주세요.')
+                print('0~6 사이 번호를 선택해주세요.')
                 pause()
         except KeyboardInterrupt:
             print('\n작업이 취소되었습니다.')
@@ -623,6 +799,28 @@ def run_cli(args, cfg, storage):
         ext = {'csv': 'csv', 'jsonl': 'jsonl', 'xlsx': 'xlsx'}[args.format]
         out = args.output or f'output/reviews_export.{ext}'
         print(export(storage, args.format, out, filters(args)))
+    elif args.command == 'compare':
+        if args.list_categories:
+            cats = list_categories(storage)
+            if not cats:
+                print('카테고리 정보를 계산할 데이터가 없습니다.')
+            else:
+                print('=== 사용 가능한 카테고리 (제품명 키워드 기반 추정) ===')
+                for name, count in sorted(cats.items(), key=lambda x: -x[1]):
+                    print(f' - {name} ({count}개 제품)')
+        elif args.category:
+            out_dir = args.output_dir or str(Path(cfg['visualization']['output_dir']) / 'compare' / safe_folder_name(args.category))
+            result = compare_category(storage, cfg, args.category, args.limit or 5, out_dir, not args.no_chart)
+            print_compare_result(result, 'product')
+        elif args.products or args.brands:
+            kind = 'product' if args.products else 'brand'
+            raw = args.products if args.products else args.brands
+            names = raw.split(',')
+            out_dir = args.output_dir or str(Path(cfg['visualization']['output_dir']) / 'compare')
+            result = compare(storage, cfg, kind, names, out_dir, not args.no_chart)
+            print_compare_result(result, kind)
+        else:
+            print('--products, --brands, --category, --list-categories 중 하나를 사용해주세요.')
 
 
 def main():
