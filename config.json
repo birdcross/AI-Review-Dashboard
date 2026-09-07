@@ -17,14 +17,15 @@
   "clean": {
     "min_length": 5
   },
-"ai": {
-  "provider": "gemini",
-  "api_key_env": "GEMINI_API_KEY",
-  "base_url": "https://generativelanguage.googleapis.com/v1beta/models",
-  "model": "gemini-2.5-flash",
-  "timeout_seconds": 90,
-  "batch_size": 10,
-  "extract_limit": 120
+  "ai": {
+    "provider": "gemini",
+    "api_key_env": "GEMINI_API_KEY",
+    "base_url": "https://generativelanguage.googleapis.com/v1beta/models",
+    "model": "gemini-2.5-flash",
+    "timeout_seconds": 90,
+    "batch_size": 10,
+    "extract_limit": 120,
+    "sentiment_prompt_version": "v1"
   },
   "visualization": {
     "output_dir": "output",
@@ -41,6 +42,7 @@
   },
   "alert": {
     "recent_days": 30,
-    "negative_ratio_threshold": 0.3
+    "negative_ratio_threshold": 0.3,
+    "increase_threshold": 0.1
   }
 }

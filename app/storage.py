@@ -66,7 +66,7 @@ class JsonlStorage:
             new={**item, 'id':self.next_id(rows), 'created_at':now, 'updated_at':now}
             self.append_jsonl(self.clean_path, new)
             return 'inserted'
-        preserved={k:rows[idx].get(k) for k in ['sentiment','confidence','analyzed_at','analysis_provider']}
+        preserved={k:rows[idx].get(k) for k in ['sentiment','confidence','analyzed_at','analysis_provider','analysis_language','prompt_version']}
         rows[idx]={**rows[idx], **item, **preserved, 'updated_at':now}
         self.write_jsonl(self.clean_path, rows)
         return 'updated'
@@ -81,6 +81,10 @@ class JsonlStorage:
                 r['sentiment']=u['sentiment']
                 r['confidence']=float(u['confidence'])
                 r['analysis_provider']=u.get('analysis_provider','api')
+                if u.get('analysis_language'):
+                    r['analysis_language']=u['analysis_language']
+                if u.get('prompt_version'):
+                    r['prompt_version']=u['prompt_version']
                 r['analyzed_at']=now
                 r['updated_at']=now
         self.write_jsonl(self.clean_path, rows)

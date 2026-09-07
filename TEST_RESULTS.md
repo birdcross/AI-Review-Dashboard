@@ -70,3 +70,36 @@ analyze 옵션 확인:
 결과: PASS
 
 실제 API 호출은 사용자의 `GEMINI_API_KEY`가 있어야 실행됩니다.
+
+## 2026-09-07 추가 과제 보완 테스트
+
+추가 구현 항목:
+
+- 한국어/영어 다국어 감정 분석
+- 최근 N일 vs 직전 N일 부정 리뷰 급증 감지
+- 급증 원인 가설 및 후속 분석 절차
+- 차트 Base64 내장 단일 HTML 대시보드
+- 샘플링 검수 CSV 생성 및 정확도 평가
+- 프롬프트 v1/v2 A/B 테스트 결과 CSV/JSON 기록
+
+자동 테스트 실행:
+
+```text
+python -m unittest discover -s tests -v
+```
+
+결과:
+
+```text
+test_bilingual_offline_sentiment ... ok
+test_negative_surge_comparison_and_hypotheses ... ok
+test_prompt_ab_records_results_without_overwriting_storage ... ok
+test_sampling_and_human_evaluation ... ok
+test_standalone_html_embeds_charts ... ok
+
+Ran 5 tests
+OK
+```
+
+추가로 실제 프로젝트 데이터에 대해 `dashboard` 명령을 실행하여 `dashboard.html` 생성 성공을 확인했고,
+HTML 내부에 `data:image/png;base64,`가 포함되며 외부 PNG `src` 참조가 없음을 확인했습니다.

@@ -17,6 +17,7 @@ from app.analytics import stats, theme_counts, recent_negative_alert
 from app.dashboard import dashboard
 from app.exporter import export
 from app.compare import compare, compare_category, list_categories
+from app.evaluation import sample_for_review, evaluate_review_file, run_prompt_ab
 from app.shop import (
     product_catalog,
     product_summary,
@@ -77,7 +78,8 @@ def parser():
     g.add_argument('--unanalyzed', action='store_true')
     x.add_argument('--limit', type=int)
     x.add_argument('--force', action='store_true')
-    x.add_argument('--offline', action='store_true', help='API 없이 검증용 베이스라인 분석')
+    x.add_argument('--offline', action='store_true', help='API 없이 검증용 한/영 베이스라인 분석')
+    x.add_argument('--prompt-version', choices=['v1', 'v2'], help='감정 분석 프롬프트 버전')
 
     x = sp.add_parser('extract')
     common_filters(x)
@@ -101,7 +103,7 @@ def parser():
     common_filters(x)
     x.add_argument('--output-dir')
     x.add_argument('--top-n', type=int, default=5)
-    x.add_argument('--html', action='store_true')
+    x.add_argument('--html', action='store_true', help='호환 옵션: HTML은 기본 생성되며 단일 파일로 저장됨')
 
     x = sp.add_parser('export')
     x.add_argument('--format', choices=['csv', 'jsonl', 'xlsx'], required=True)
@@ -112,6 +114,20 @@ def parser():
     x.add_argument('--date-to')
     x.add_argument('--product')
     x.add_argument('--brand')
+
+    x = sp.add_parser('sample', help='AI 결과 검수를 위한 샘플 CSV를 생성한다')
+    common_filters(x)
+    x.add_argument('--size', type=int, default=50)
+    x.add_argument('--seed', type=int, default=42)
+    x.add_argument('--output', default='output/evaluation/review_sample.csv')
+
+    x = sp.add_parser('evaluate', help='사람이 검수한 샘플 CSV의 정확도를 계산한다')
+    x.add_argument('--file', required=True)
+
+    x = sp.add_parser('prompt-ab', help='동일 검수 샘플로 프롬프트 v1/v2 A/B 테스트를 수행한다')
+    x.add_argument('--file', required=True)
+    x.add_argument('--versions', default='v1,v2')
+    x.add_argument('--output-dir', default='output/evaluation')
 
     x = sp.add_parser('compare', help='제품/브랜드/카테고리 단위로 리뷰를 비교 분석한다')
     g = x.add_mutually_exclusive_group()
@@ -546,9 +562,18 @@ def overall_dashboard_menu(storage, cfg):
     print('Report:', result.get('report'))
     for x in result.get('charts', []):
         print('Chart :', x)
-    alert = recent_negative_alert(rows, cfg['alert']['recent_days'], cfg['alert']['negative_ratio_threshold'])
+    alert = recent_negative_alert(
+        rows, cfg['alert']['recent_days'], cfg['alert']['negative_ratio_threshold'],
+        cfg['alert'].get('increase_threshold', 0.10)
+    )
     if alert and alert['warning']:
-        print(f"\n[경고] 최근 {cfg['alert']['recent_days']}일 부정 리뷰 비율 {alert['negative_ratio']*100:.1f}%")
+        prev = alert.get('previous_negative_ratio')
+        inc = alert.get('increase')
+        prev_text = 'N/A' if prev is None else f'{prev * 100:.1f}%'
+        inc_text = 'N/A' if inc is None else f'{inc * 100:+.1f}%p'
+        print(f"\n[경고] 최근 {cfg['alert']['recent_days']}일 부정 리뷰 {alert['negative_ratio']*100:.1f}% (이전 {prev_text}, 증가 {inc_text})")
+        for hypothesis in alert.get('hypotheses', []):
+            print(' - 원인 가설:', hypothesis)
     pause()
 
 
@@ -769,7 +794,10 @@ def run_cli(args, cfg, storage):
         print(clean_all(storage, args.min_length or cfg['clean']['min_length'], args.reset))
     elif args.command == 'analyze':
         mode = 'id' if args.id is not None else 'all' if args.all else 'unanalyzed'
-        print(analyze(storage, cfg, mode, args.id, args.force, args.limit, args.offline))
+        analyze_cfg = cfg
+        if args.prompt_version:
+            analyze_cfg = {**cfg, 'ai': {**cfg.get('ai', {}), 'sentiment_prompt_version': args.prompt_version}}
+        print(analyze(storage, analyze_cfg, mode, args.id, args.force, args.limit, args.offline))
     elif args.command == 'extract':
         item, n = extract(storage, cfg, filters(args), args.limit or cfg['ai']['extract_limit'], args.offline)
         print(f'추출 대상: {n}건')
@@ -786,11 +814,20 @@ def run_cli(args, cfg, storage):
     elif args.command == 'stats':
         rows = storage.filtered(filters(args))
         print_stats(stats(rows))
-        alert = recent_negative_alert(rows, cfg['alert']['recent_days'], cfg['alert']['negative_ratio_threshold'])
+        alert = recent_negative_alert(
+        rows, cfg['alert']['recent_days'], cfg['alert']['negative_ratio_threshold'],
+        cfg['alert'].get('increase_threshold', 0.10)
+    )
         if alert and alert['warning']:
-            print(f"\n[WARNING] 최근 {cfg['alert']['recent_days']}일 부정 리뷰 비율 {alert['negative_ratio']*100:.1f}%")
+            prev = alert.get('previous_negative_ratio')
+            inc = alert.get('increase')
+            prev_text = 'N/A' if prev is None else f'{prev * 100:.1f}%'
+            inc_text = 'N/A' if inc is None else f'{inc * 100:+.1f}%p'
+            print(f"\n[WARNING] 최근 부정 리뷰 {alert['negative_ratio']*100:.1f}% / 이전 {prev_text} / 증가 {inc_text}")
+            for hypothesis in alert.get('hypotheses', []):
+                print(' - 원인 가설:', hypothesis)
     elif args.command == 'dashboard':
-        result = dashboard(storage, cfg, filters(args), args.output_dir, args.top_n, args.html)
+        result = dashboard(storage, cfg, filters(args), args.output_dir, args.top_n, True)
         print(result['text'])
         print('\n생성 파일:')
         for x in result['charts'] + [result['report'], result['txt']] + ([result['html']] if result['html'] else []):
@@ -799,6 +836,17 @@ def run_cli(args, cfg, storage):
         ext = {'csv': 'csv', 'jsonl': 'jsonl', 'xlsx': 'xlsx'}[args.format]
         out = args.output or f'output/reviews_export.{ext}'
         print(export(storage, args.format, out, filters(args)))
+    elif args.command == 'sample':
+        result = sample_for_review(storage, args.output, args.size, args.seed, filters(args))
+        print(f"검수 샘플 생성: {result['path']} ({result['sample_size']}건, seed={result['seed']})")
+        print('CSV의 human_sentiment 열에 positive/neutral/negative를 입력한 뒤 evaluate 또는 prompt-ab를 실행하세요.')
+    elif args.command == 'evaluate':
+        result = evaluate_review_file(args.file)
+        print(result)
+    elif args.command == 'prompt-ab':
+        versions = tuple(v.strip() for v in args.versions.split(',') if v.strip())
+        result = run_prompt_ab(cfg, args.file, args.output_dir, versions)
+        print(result)
     elif args.command == 'compare':
         if args.list_categories:
             cats = list_categories(storage)

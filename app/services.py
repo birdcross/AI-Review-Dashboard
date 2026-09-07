@@ -1,6 +1,6 @@
 import logging
 
-from .offline_sentiment import analyze as offline_analyze
+from .offline_sentiment import analyze as offline_analyze, detect_language
 from .analytics import stats
 
 logger = logging.getLogger(__name__)
@@ -23,7 +23,8 @@ def analyze(storage, config, mode='unanalyzed', review_id=None, force=False,
     if limit:
         targets = targets[:limit]
 
-    logger.info('분석 대상: %s건', len(targets))
+    prompt_version = str(config.get('ai', {}).get('sentiment_prompt_version', 'v1'))
+    logger.info('분석 대상: %s건 / 프롬프트: %s', len(targets), prompt_version)
     if not targets:
         return {'success': 0, 'failed': 0, 'target': 0, 'provider': 'none'}
 
@@ -39,6 +40,8 @@ def analyze(storage, config, mode='unanalyzed', review_id=None, force=False,
                 'sentiment': sentiment,
                 'confidence': confidence,
                 'analysis_provider': 'offline_baseline',
+                'analysis_language': detect_language(text),
+                'prompt_version': 'offline_bilingual_v1',
             })
             logger.info('[%s/%s] ID=%s 완료: %s (%.2f)',
                         i, len(targets), r['id'], sentiment, confidence)
@@ -59,7 +62,7 @@ def analyze(storage, config, mode='unanalyzed', review_id=None, force=False,
     for pos in range(0, len(targets), batch_size):
         batch = targets[pos:pos + batch_size]
         try:
-            result = client.analyze_batch(batch)
+            result = client.analyze_batch(batch, prompt_version=prompt_version)
             valid = []
             batch_by_id = {int(r['id']): r for r in batch}
 
@@ -76,11 +79,15 @@ def analyze(storage, config, mode='unanalyzed', review_id=None, force=False,
                 if sentiment not in {'positive', 'negative', 'neutral'}:
                     continue
 
+                source_row = batch_by_id[review_id_value]
+                source_text = source_row.get('review_text') or source_row.get('original_text') or ''
                 valid.append({
                     'id': review_id_value,
                     'sentiment': sentiment,
                     'confidence': confidence,
                     'analysis_provider': provider_label,
+                    'analysis_language': detect_language(source_text),
+                    'prompt_version': prompt_version,
                 })
 
             storage.save_analysis_many(valid)
