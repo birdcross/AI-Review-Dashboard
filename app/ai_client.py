@@ -8,6 +8,28 @@ from app.env import get_api_key
 
 logger = logging.getLogger(__name__)
 
+SENTIMENT_PROMPTS = {
+    'v1': (
+        '고객 리뷰 감정 분석기다. 한국어와 영어 리뷰를 모두 분석한다. '
+        '각 리뷰의 텍스트만 보고 감정을 분석한다. sentiment는 반드시 '
+        'positive, negative, neutral 중 하나로 판단하고, confidence는 판단 '
+        '신뢰도를 0.0~1.0 숫자로 반환한다. 반어/부정 표현과 문장 전체 맥락을 '
+        '고려한다. 반드시 JSON 배열만 출력한다. 각 원소 형식은 '
+        '{"id":1,"sentiment":"positive","confidence":0.95} 이다.'
+    ),
+    'v2': (
+        '너는 한국어/영어 전자제품 고객 리뷰 전문 감정 분석가다. '
+        '별점이나 외부 정보가 아니라 제공된 리뷰 문장만 사용한다. '
+        '장점과 단점이 함께 있으면 최종 구매 만족도를 기준으로 판단하되, '
+        '명확한 고장·작동불가·반품·강한 불만은 negative를 우선 고려한다. '
+        '단순 사실 설명이나 긍정/부정 근거가 약하면 neutral로 분류한다. '
+        'sentiment는 positive/negative/neutral 중 하나, confidence는 0.0~1.0이다. '
+        '한국어의 안/못/않다 같은 부정과 영어의 not/never 같은 부정을 반드시 '
+        '문맥에 반영한다. 반드시 JSON 배열만 출력하고 각 원소는 '
+        '{"id":1,"sentiment":"positive","confidence":0.95} 형식으로 반환한다.'
+    ),
+}
+
 
 class AIClient:
     def __init__(self, config):
@@ -115,7 +137,7 @@ class AIClient:
                 raise
             return json.loads(match.group(1))
 
-    def analyze_batch(self, rows):
+    def analyze_batch(self, rows, prompt_version='v1'):
         payload = [
             {
                 'id': int(row['id']),
@@ -123,13 +145,9 @@ class AIClient:
             }
             for row in rows
         ]
-        instructions = (
-            '고객 리뷰 감정 분석기다. 각 리뷰의 텍스트만 보고 감정을 분석한다. '
-            'sentiment는 반드시 positive, negative, neutral 중 하나로 판단하고, '
-            'confidence는 판단 신뢰도를 0.0~1.0 숫자로 반환한다. '
-            '반드시 JSON 배열만 출력한다. '
-            '각 원소 형식은 {"id":1,"sentiment":"positive","confidence":0.95} 이다.'
-        )
+        if prompt_version not in SENTIMENT_PROMPTS:
+            raise ValueError(f'지원하지 않는 프롬프트 버전입니다: {prompt_version}')
+        instructions = SENTIMENT_PROMPTS[prompt_version]
         result = self.parse_json(
             self._request(instructions, json.dumps(payload, ensure_ascii=False))
         )
